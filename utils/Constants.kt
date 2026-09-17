@@ -1,9 +1,9 @@
 package com.fitnesslemon.app.utils
 
 object Constants {
-    // Production API must expose a valid trusted TLS certificate for this host.
-    // Do not re-enable HTTP: access tokens and user data must never cross plaintext transport.
-    const val BASE_URL = "https://94.159.117.241/"
+    // The API server identifies itself as api.fitnesslemon.ru. The certificate must
+    // be valid for this hostname; never use the raw IP or plaintext HTTP in production.
+    const val BASE_URL = "https://api.fitnesslemon.ru/"
 
     const val LOGIN_ENDPOINT = "auth/login"
     const val TRAINERS_ENDPOINT = "trainers"
