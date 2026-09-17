@@ -17,6 +17,9 @@ interface NewsDao {
     @Query("SELECT * FROM news ORDER BY id DESC")
     fun getAllFlow(): Flow<List<NewsEntity>>
 
+    @Query("SELECT MAX(cachedAt) FROM news")
+    suspend fun getLatestCachedAt(): Long?
+
     @Query("DELETE FROM news")
     suspend fun clearAll()
 

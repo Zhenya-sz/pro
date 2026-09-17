@@ -22,16 +22,22 @@ class AuthInterceptor(private val context: Context) : Interceptor {
 
         val response = chain.proceed(authenticatedRequest)
         if (response.code == 401 && !isPublic) {
-            response.close()
-            runCatching { PreferencesManager.clearUserData() }
-            Handler(Looper.getMainLooper()).post {
+            // Keep the original response open and return it to Retrofit. Closing it here
+            // caused callers to receive a closed response body.
+            notifySessionExpired()
+        }
+        return response
+    }
+
+    private fun notifySessionExpired() {
+        runCatching { PreferencesManager.clearUserData() }
+        Handler(Looper.getMainLooper()).post {
+            runCatching {
                 context.startActivity(Intent(context, LoginActivity::class.java).apply {
                     flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
                 })
             }
-            return response
         }
-        return response
     }
 
     private fun isPublicRequest(method: String, path: String): Boolean {
