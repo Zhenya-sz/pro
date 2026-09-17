@@ -2,6 +2,10 @@ package com.fitnesslemon.app.data.repository
 
 import android.content.Context
 import com.fitnesslemon.app.data.api.ApiClient
+import com.fitnesslemon.app.data.api.ApiResult
+import com.fitnesslemon.app.data.api.ApiResults
+import com.fitnesslemon.app.data.api.ApiResponse
+import com.fitnesslemon.app.data.api.NewsData
 import com.fitnesslemon.app.data.api.NewsResponse
 import com.fitnesslemon.app.data.database.NewsDatabase
 import com.fitnesslemon.app.data.database.NewsEntity
@@ -14,153 +18,68 @@ import kotlinx.coroutines.withContext
 import retrofit2.Response
 
 class NewsRepository(private val context: Context) {
+    private val newsDao by lazy { NewsDatabase.getInstance(context).newsDao() }
 
-    private val newsDao by lazy {
-        NewsDatabase.getInstance(context).newsDao()
-    }
-
-    // Получение новостей из API
-    suspend fun getNews(
-        perPage: Int = 20,
-        page: Int = 1
-    ): Response<NewsResponse> {
+    suspend fun getNews(perPage: Int = 20, page: Int = 1): Response<NewsResponse> {
         return try {
             val response = ApiClient.apiService.getNews(perPage, page)
-            // Сохраняем в кэш при успешном ответе
             if (response.isSuccessful) {
-                val newsData = response.body()
-                newsData?.data?.news?.let { newsList ->
-                    withContext(Dispatchers.IO) {
-                        newsDao.insertAll(newsList.map { it.toEntity() })
-                    }
+                response.body()?.data?.news?.let { news ->
+                    withContext(Dispatchers.IO) { newsDao.insertAll(news.map(News::toEntity)) }
                 }
+                response
+            } else {
+                cachedResponseOr(response)
             }
-            response
-        } catch (e: Exception) {
-            // Если API не доступен, пробуем получить из кэша
-            val cachedNews = getCachedNews()
-            if (cachedNews.isNotEmpty()) {
-                // Возвращаем успешный ответ с кэшированными данными
-                val response = NewsResponse(
+        } catch (error: Exception) {
+            cachedResponseOr(null) ?: throw error
+        }
+    }
+
+    private suspend fun cachedResponseOr(failedResponse: Response<NewsResponse>?): Response<NewsResponse> {
+        val cached = getCachedNews()
+        if (cached.isNotEmpty()) {
+            return Response.success(
+                NewsResponse(
                     success = true,
-                    message = "Загружено из кэша",
-                    data = com.fitnesslemon.app.data.api.NewsData(
-                        news = cachedNews,
-                        total = cachedNews.size,
-                        page = 1,
-                        perPage = cachedNews.size,
-                        totalPages = 1
-                    )
+                    message = "Loaded from local cache",
+                    data = NewsData(cached, cached.size, 1, cached.size, 1)
                 )
-                return retrofit2.Response.success(response)
-            }
-            throw e
+            )
         }
+        return failedResponse ?: Response.error(503, okhttp3.ResponseBody.create(null, "No cached data"))
     }
 
-    // Получение кэшированных новостей из Room
-    suspend fun getCachedNews(): List<News> {
-        return withContext(Dispatchers.IO) {
-            newsDao.getAll().map { it.toModel() }
-        }
+    suspend fun getCachedNews(): List<News> = withContext(Dispatchers.IO) {
+        newsDao.getAll().map(NewsEntity::toModel)
     }
 
-    // Получение новостей как Flow (для LiveData)
-    fun getNewsFlow(): Flow<List<News>> {
-        return newsDao.getAllFlow().map { entities ->
-            entities.map { it.toModel() }
-        }
-    }
+    fun getNewsFlow(): Flow<List<News>> = newsDao.getAllFlow().map { list -> list.map(NewsEntity::toModel) }
 
-    suspend fun likeNews(newsId: Int): Response<com.fitnesslemon.app.data.api.ApiResponse> {
-        val token = PreferencesManager.getToken() ?: return retrofit2.Response.error(
-            401,
-            okhttp3.ResponseBody.create(null, "Unauthorized")
-        )
-        return ApiClient.apiService.likeNews("Bearer $token", newsId)
-    }
+    suspend fun clearCache() = withContext(Dispatchers.IO) { newsDao.clearAll() }
 
-    suspend fun unlikeNews(newsId: Int): Response<com.fitnesslemon.app.data.api.ApiResponse> {
-        val token = PreferencesManager.getToken() ?: return retrofit2.Response.error(
-            401,
-            okhttp3.ResponseBody.create(null, "Unauthorized")
-        )
-        return ApiClient.apiService.unlikeNews("Bearer $token", newsId)
-    }
+    suspend fun likeNews(newsId: Int): Response<ApiResponse> = authorized { ApiClient.apiService.likeNews(it, newsId) }
+    suspend fun unlikeNews(newsId: Int): Response<ApiResponse> = authorized { ApiClient.apiService.unlikeNews(it, newsId) }
+    suspend fun saveNews(newsId: Int): Response<ApiResponse> = authorized { ApiClient.apiService.saveNews(it, newsId) }
+    suspend fun unsaveNews(newsId: Int): Response<ApiResponse> = authorized { ApiClient.apiService.unsaveNews(it, newsId) }
 
-    suspend fun saveNews(newsId: Int): Response<com.fitnesslemon.app.data.api.ApiResponse> {
-        val token = PreferencesManager.getToken() ?: return retrofit2.Response.error(
-            401,
-            okhttp3.ResponseBody.create(null, "Unauthorized")
-        )
-        return ApiClient.apiService.saveNews("Bearer $token", newsId)
-    }
-
-    suspend fun unsaveNews(newsId: Int): Response<com.fitnesslemon.app.data.api.ApiResponse> {
-        val token = PreferencesManager.getToken() ?: return retrofit2.Response.error(
-            401,
-            okhttp3.ResponseBody.create(null, "Unauthorized")
-        )
-        return ApiClient.apiService.unsaveNews("Bearer $token", newsId)
-    }
-
-    fun clearCache() {
-        // Очищаем кэш в памяти и базе
-        // Можно реализовать очистку Room
+    private suspend fun authorized(call: suspend (String) -> Response<ApiResponse>): Response<ApiResponse> {
+        val token = PreferencesManager.getToken() ?: return Response.error(401, okhttp3.ResponseBody.create(null, "Unauthorized"))
+        return call("Bearer $token")
     }
 }
 
-// Extension functions для конвертации
-fun News.toEntity(): NewsEntity {
-    return NewsEntity(
-        id = id,
-        title = title,
-        excerpt = excerpt,
-        content = content,
-        date = date,
-        formattedDate = formattedDate,
-        thumbnail = thumbnail,
-        authorId = authorId,
-        authorName = authorName,
-        categories = categories?.joinToString(","),
-        link = link,
-        images = images?.joinToString(","),
-        videos = videos?.joinToString(","),
-        shortDescription = shortDescription,
-        importance = importance,
-        categoryId = categoryId,
-        categoryName = categoryName,
-        sendPush = sendPush,
-        viewsCount = viewsCount,
-        likesCount = likesCount,
-        commentsCount = commentsCount,
-        authorAvatar = authorAvatar
-    )
-}
+fun News.toEntity() = NewsEntity(
+    id, title, excerpt, content, date, formattedDate, thumbnail, authorId, authorName,
+    categories?.joinToString(","), link, images?.joinToString(","), videos?.joinToString(","),
+    shortDescription, importance, categoryId, categoryName, sendPush, viewsCount,
+    likesCount, commentsCount, authorAvatar
+)
 
-fun NewsEntity.toModel(): News {
-    return News(
-        id = id,
-        title = title,
-        excerpt = excerpt,
-        content = content,
-        date = date,
-        formattedDate = formattedDate,
-        thumbnail = thumbnail,
-        authorId = authorId,
-        authorName = authorName,
-        categories = categories?.split(",")?.filter { it.isNotEmpty() },
-        link = link,
-        images = images?.split(",")?.filter { it.isNotEmpty() },
-        videos = videos?.split(",")?.filter { it.isNotEmpty() },
-        shortDescription = shortDescription,
-        importance = importance,
-        categoryId = categoryId,
-        categoryName = categoryName,
-        sendPush = sendPush,
-        viewsCount = viewsCount,
-        likesCount = likesCount ?: 0,
-        commentsCount = commentsCount ?: 0,
-        authorAvatar = authorAvatar
-    )
-}
+fun NewsEntity.toModel() = News(
+    id, title, excerpt, content, date, formattedDate, thumbnail, authorId, authorName,
+    categories?.split(",")?.filter(String::isNotEmpty), link,
+    images?.split(",")?.filter(String::isNotEmpty), videos?.split(",")?.filter(String::isNotEmpty),
+    shortDescription, importance, categoryId, categoryName, sendPush, viewsCount,
+    likesCount ?: 0, commentsCount ?: 0, authorAvatar
+)
