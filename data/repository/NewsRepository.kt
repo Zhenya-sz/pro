@@ -2,8 +2,6 @@ package com.fitnesslemon.app.data.repository
 
 import android.content.Context
 import com.fitnesslemon.app.data.api.ApiClient
-import com.fitnesslemon.app.data.api.ApiResult
-import com.fitnesslemon.app.data.api.ApiResults
 import com.fitnesslemon.app.data.api.ApiResponse
 import com.fitnesslemon.app.data.api.NewsData
 import com.fitnesslemon.app.data.api.NewsResponse
@@ -25,7 +23,9 @@ class NewsRepository(private val context: Context) {
             val response = ApiClient.apiService.getNews(perPage, page)
             if (response.isSuccessful) {
                 response.body()?.data?.news?.let { news ->
-                    withContext(Dispatchers.IO) { newsDao.insertAll(news.map(News::toEntity)) }
+                    withContext(Dispatchers.IO) {
+                        newsDao.insertAll(news.map(News::toEntity))
+                    }
                 }
                 response
             } else {
@@ -42,7 +42,7 @@ class NewsRepository(private val context: Context) {
             return Response.success(
                 NewsResponse(
                     success = true,
-                    message = "Loaded from local cache",
+                    message = if (failedResponse == null) "Loaded from local cache" else "Showing cached data",
                     data = NewsData(cached, cached.size, 1, cached.size, 1)
                 )
             )
